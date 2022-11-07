@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Mutex};
 
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use eframe::{egui::{self, emath}, epaint::{vec2, pos2}};
 use uuid::Uuid;
 
@@ -214,20 +214,22 @@ impl PlanerApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let current_day = Utc::today();
             // <marker>
             let time_width = 50.0;
             let room_width = 200.0;
             let header_height = 100.0;
             let padding = 5.0;
-            egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::ScrollArea::new([true; 2]).auto_shrink([false; 2]).show(ui, |ui| {
+                let top_left = ui.min_rect().left_top();
                 // manualy set dims
-                ui.set_width(room_width * (self.data.rooms.len() as f32));
+                ui.set_width((room_width + padding * 2.0) * (self.data.rooms.len() as f32) + time_width + padding * 2.0);
 
                 let mut delete_idx = None;
                 for (i, room) in self.data.rooms.iter_mut().enumerate() {
                     let idx = i as f32;
                     let rect = egui::Rect::from_min_size(
-                        ui.min_rect().left_top() + vec2(idx * (room_width + padding) + time_width, 0.0),
+                        ui.min_rect().left_top() + vec2(idx * (room_width + padding) + time_width + padding * 2.0, 0.0),
                         vec2(room_width, header_height));
 
                     let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
@@ -266,9 +268,79 @@ impl PlanerApp {
 
                 if let Some(idx) = delete_idx { self.data.rooms.remove(idx); }
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let minute_height = 2.0;
+                // let rect = egui::Rect::from_min_size(
+                //     ui.min_rect().left_top() + vec2(0.0, header_height + padding * 2.0),
+                //    ui.available_size(),
+                // );
+                // ui.painter().debug_rect(rect, egui::Color32::DARK_RED, "rect");
+                // let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+
+                /*egui::ScrollArea::vertical().show(ui, |ui|*/ {
                     // self.data.timetable.times
-                });
+                    if self.data.timetable.times.len() > 0 {
+                        let start_t = self.data.timetable.times[0].start;
+                        let last_lesson = self.data.timetable.times.last().unwrap();
+                        let total_time = (last_lesson.start + last_lesson.duration).signed_duration_since(start_t).num_minutes() as f32;
+                        let total_height = total_time * minute_height + header_height + padding * 2.0;
+                        ui.set_height(total_height);
+
+                        for (i, lesson) in self.data.timetable.times.iter().enumerate() {
+                            let start = lesson.start.signed_duration_since(start_t).num_minutes() as f32;
+                            let duration = lesson.duration.num_minutes() as f32;
+
+                            let rect = egui::Rect::from_min_size(
+                                top_left + vec2(0.0, start * minute_height + header_height + padding * 2.0),
+                                vec2(time_width, duration * minute_height),
+                            );
+
+                            let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+
+                            ui.group(|ui| {
+                                ui.label(lesson.start.format("%H:%M").to_string());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                                    ui.label((lesson.start + lesson.duration).format("%H:%M").to_string());
+                                });
+                            });
+
+                            for (i, room) in self.data.rooms.iter().enumerate() {
+                                let lesson_start = current_day.and_time(lesson.start).unwrap();
+                                let bookings = room.calendar.get_booked_from_to(&lesson_start, lesson.duration);
+                                let booking = bookings.last();
+                                if let Some(booking) = booking {
+                                    let duration = booking.duration.num_minutes() as f32;
+                                    let rect = egui::Rect::from_min_size(
+                                        top_left + vec2(
+                                            (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
+                                            start * minute_height + header_height + padding * 2.0),
+                                        vec2(room_width, duration * minute_height),
+                                    );
+                                    let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+
+                                } else {
+                                    let rect = egui::Rect::from_min_size(
+                                        top_left + vec2(
+                                            (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
+                                            start * minute_height + header_height + padding * 2.0),
+                                        vec2(room_width, duration * minute_height),
+                                    );
+
+                                    let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+
+                                    ui.group(|ui| {
+                                        ui.allocate_space(ui.available_size());
+                                    });
+                                }
+                                    ui.allocate_space(ui.available_size());
+                            }
+                        }
+                    }
+                        
+
+                    // self.data.timetable.times.iter().fold(self.data.timetable.times[0].start, |acc, v| {
+                    //     let end = acc + v.duration;
+                    // });
+                }//);
             });
         });
     }
@@ -353,7 +425,7 @@ impl PlanerApp {
                         });
                     });
 
-                    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false; 2]).stick_to_bottom(true).show(ui, |ui| {
                         let mut delete_idx = None;
                         for (i, teacher) in self.data.teachers.iter()
                         .filter(|v| {
@@ -509,7 +581,7 @@ impl PlanerApp {
                         });
                     });
 
-                    {
+                    egui::ScrollArea::vertical().auto_shrink([false; 2]).stick_to_bottom(true).show(ui, |ui| {
                         let mut delete_idx = None;
                         for (i, student) in self.data.students.iter()
                         .filter(|v| {
@@ -585,7 +657,7 @@ impl PlanerApp {
                         if let Some(idx) = delete_idx {
                             self.data.students.remove(idx);
                         }
-                    }
+                    });
                 },
             }
         });

@@ -136,10 +136,10 @@ pub struct Timetable {
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimetableLesson {
-    start: NaiveTime,
+    pub start: NaiveTime,
     #[serde_as(as = "DurationSeconds<i64>")]
-    duration: Duration,
-    lesson_type: LessonType,
+    pub duration: Duration,
+    pub lesson_type: LessonType,
 }
 
 impl Default for Timetable {
@@ -170,7 +170,7 @@ impl Default for Timetable {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Room {
     uuid: Uuid,
-    calendar: Calendar<UuidRef<Mutex<Exam>>>,
+    pub calendar: Calendar<UuidRef<Mutex<Exam>>>,
     pub number: String,
     pub tags: Vec<String>,
 }
