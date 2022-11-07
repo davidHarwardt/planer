@@ -20,6 +20,7 @@ impl<E> Calendar<E> {
         self.events.push(ev);
     }
 
+
     pub fn is_booked_at(&self, time: &DateTime<Utc>) -> bool {
         self.events.iter().find(|v| v.includes_time(time)).is_some()
     }
@@ -46,6 +47,14 @@ impl<E> Calendar<E> {
     }
 }
 
+impl<E: Eq> Calendar<E> {
+    pub fn remove_event(&mut self, ev: &Event<E>) -> Option<Event<E>> {
+        self.events.iter().position(|v| v.data == ev.data).map(|idx| {
+            self.events.remove(idx)
+        })
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Event<T> {
@@ -57,6 +66,10 @@ pub struct Event<T> {
 }
 
 impl<T> Event<T> {
+    pub fn new(start: DateTime<Utc>, duration: Duration, data: T) -> Self {
+        Self { start, duration, data }
+    }
+
     pub fn includes_time(&self, time: &DateTime<Utc>) -> bool {
         &self.start <= time && &(self.start.clone() + self.duration.clone()) >= time
     }

@@ -4,7 +4,7 @@ use chrono::{Duration, Utc};
 use eframe::{egui::{self, emath}, epaint::{vec2, pos2}};
 use uuid::Uuid;
 
-use crate::{drag_and_drop::drop_target, planer::{PlanerData, Exam, Teacher, Student, uuid_ref::UuidRef, Tag, Name}, modal::Modal, search::SearchData};
+use crate::{drag_and_drop::drop_target, planer::{PlanerData, Exam, Teacher, Student, uuid_ref::UuidRef, Tag, Name, calendar::Event}, modal::Modal, search::SearchData};
 
 use super::drag_and_drop::drag_source;
 
@@ -199,7 +199,7 @@ impl PlanerApp {
                     drag_source(ui, ui.id().with((i, "exam_drag_calendar")), |ui| {
                         let mut exam = exam.lock().unwrap();
 
-                        self.show_exam(ui, &mut exam, false, || {})
+                        Self::show_exam(ui, &mut exam, false, || {})
                     }, || DraggingExam(uuid));
                 }
 
@@ -303,19 +303,32 @@ impl PlanerApp {
                                 });
                             });
 
-                            for (i, room) in self.data.rooms.iter().enumerate() {
+                            for (i, room) in self.data.rooms.iter_mut().enumerate() {
                                 let lesson_start = current_day.and_time(lesson.start).unwrap();
-                                let bookings = room.calendar.get_booked_from_to(&lesson_start, lesson.duration);
+                                let bookings = room.calendar.get_events_at(&lesson_start);
                                 let booking = bookings.last();
                                 if let Some(booking) = booking {
-                                    let duration = booking.duration.num_minutes() as f32;
-                                    let rect = egui::Rect::from_min_size(
-                                        top_left + vec2(
-                                            (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
-                                            start * minute_height + header_height + padding * 2.0),
-                                        vec2(room_width, duration * minute_height),
-                                    );
-                                    let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+                                    if booking.start == lesson_start {
+                                        let duration = booking.duration.num_minutes() as f32;
+                                        let rect = egui::Rect::from_min_size(
+                                            top_left + vec2(
+                                                (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
+                                                start * minute_height + header_height + padding * 2.0),
+                                            vec2(room_width, duration * minute_height),
+                                        );
+                                        let mut ui = ui.child_ui(rect, egui::Layout::top_down(egui::Align::TOP));
+
+                                        let id = ui.id().with(("room_exam_drag", i, &room.number[..]));
+                                        drag_source(&mut ui, id, |ui| {
+                                            if let Some(exam) = booking.data.get() {
+                                                let mut exam = exam.lock().unwrap();
+                                                Self::show_exam(ui, &mut exam, false, || println!("remove"))
+                                            } else { ui.label("<invalid>"); None }
+                                        }, || {
+                                            // DraggingExam(booking.data)
+                                            ()
+                                        });
+                                    }
 
                                 } else {
                                     let rect = egui::Rect::from_min_size(
@@ -325,13 +338,24 @@ impl PlanerApp {
                                         vec2(room_width, duration * minute_height),
                                     );
 
-                                    let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+                                    let mut ui = ui.child_ui(rect, egui::Layout::top_down(egui::Align::TOP));
 
-                                    ui.group(|ui| {
-                                        ui.allocate_space(ui.available_size());
+                                    egui::Frame::none().inner_margin(2.0).show(&mut ui, |ui| {
+                                        drop_target(ui, |ui| {
+                                            ui.allocate_space(ui.available_size());
+                                        }, |v: DraggingExam| {
+                                            let duration = if let Some(exam) = v.0.get() {
+                                                exam.lock().unwrap().duration
+                                            } else {
+                                                println!("invalid exam");
+                                                Duration::minutes(30)
+                                            };
+
+                                            room.calendar.add_event(Event::new(lesson_start, duration, v.0));
+                                        });
                                     });
                                 }
-                                    ui.allocate_space(ui.available_size());
+                                ui.allocate_space(ui.available_size());
                             }
                         }
                     }
@@ -699,7 +723,7 @@ impl PlanerApp {
                         ui.columns(num_cols, |col| {
                             for (j, (exam, ui)) in exams.iter().zip(col.iter_mut()).enumerate() {
                                 let mut exam = exam.lock().unwrap();
-                                self.show_exam(ui, &mut exam, true, || remove_exam = Some(i * num_cols + j));
+                                Self::show_exam(ui, &mut exam, true, || remove_exam = Some(i * num_cols + j));
                             }
                         });
                     }
@@ -726,7 +750,7 @@ impl PlanerApp {
         });
     }
 
-    fn show_exam(&self, ui: &mut egui::Ui, exam: &mut Exam, edit_view: bool, on_remove: impl FnOnce()) -> Option<egui::Response> {
+    fn show_exam(ui: &mut egui::Ui, exam: &mut Exam, edit_view: bool, on_remove: impl FnOnce()) -> Option<egui::Response> {
         let res = egui::Frame::group(ui.style()).fill(ui.style().noninteractive().bg_fill).show(ui, |ui| {
             if edit_view {
 
