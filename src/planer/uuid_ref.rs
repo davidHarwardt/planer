@@ -17,6 +17,13 @@ impl<T> Clone for UuidRef<T> {
     }
 }
 
+impl<T> PartialEq for UuidRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.uuid == other.uuid
+    }
+}
+impl<T> Eq for UuidRef<T> {}
+
 impl<T: AsUuid> UuidRef<T> {
     pub fn new(v: &Arc<T>) -> Self {
         Self { item: Arc::downgrade(v), uuid: v.as_uuid() }

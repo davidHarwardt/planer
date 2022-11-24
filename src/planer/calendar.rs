@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use chrono::{prelude::*, Duration, serde::ts_seconds}; 
 use serde::{Serialize, Deserialize};
 use serde_with::{serde_as, DurationSeconds};
 
-use super::uuid_ref::AsUuid;
+use super::uuid_ref::{AsUuid, UuidRef};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Calendar<E> {
@@ -55,6 +57,14 @@ impl<E: Eq> Calendar<E> {
     }
 }
 
+impl<E: AsUuid> Calendar<UuidRef<E>> {
+    pub fn revalidate(&mut self, data: &[Arc<E>]) {
+        for ev in &mut self.events {
+            ev.data.revalidate(data);
+        }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Event<T> {
@@ -76,6 +86,16 @@ impl<T> Event<T> {
     
     pub fn includes(&self, start: &DateTime<Utc>, duration: Duration) -> bool {
         start <= &(self.start.clone() + self.duration) && &(start.clone() + duration) >= &self.start
+    }
+}
+
+impl<T: Clone> Clone for Event<T> {
+    fn clone(&self) -> Self {
+        Self {
+            start: self.start,
+            duration: self.duration,
+            data: self.data.clone(),
+        }
     }
 }
 

@@ -38,6 +38,21 @@ impl<'a, T: Send + 'static> Modal<'a, T> {
         }
     }
 
+    // pub fn show_if(
+    //     ctx: &egui::Context,
+    //     v: bool,
+    //     id: egui::Id,
+    //     on_submit: impl FnOnce(T) + 'a,
+    //     view: impl FnOnce(&mut egui::Ui, &Self, &mut T),
+    //     data: impl FnOnce() -> T,
+    // ) {
+    //     let modal = Self::new(ctx, id, on_submit);
+    //     modal.show(|ui, data| {
+    //         view(ui, &modal, data);
+    //     });
+    //     if v { modal.open(data()) }
+    // }
+
     pub fn show_close_submit(&self, ui: &mut egui::Ui, can_submit: bool) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             if ui.button("cancel").clicked() { self.close() }

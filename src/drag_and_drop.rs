@@ -20,8 +20,22 @@ impl DragResponse for Option<egui::Response> {
     fn get_drag_response(self) -> Option<egui::Response> { self }
 }
 
+#[derive(Clone)]
+struct DraggingData<T: Clone + Send + Sync> {
+    data: T,
+    id: egui::Id,
+}
 
-pub fn drag_source<T, R: DragResponse + std::fmt::Debug>(ui: &mut egui::Ui, id: egui::Id, body: impl FnOnce(&mut egui::Ui) -> R, data: impl FnOnce() -> T)
+#[derive(Clone)]
+struct WasDropped;
+
+pub fn drag_source<T, R: DragResponse + std::fmt::Debug>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+    data: impl FnOnce() -> T,
+    drop_fn: impl FnOnce(),
+)
 where
     T: 'static + std::any::Any + Clone + Send + Sync,
 {
@@ -40,9 +54,23 @@ where
         // ui.ctx().move_to_top(body_res.layer_id);
 
         if res.drag_started() {
-            ui.memory().data.insert_temp(egui::Id::null(), data());
+            let data = data();
+            let dragging_data = DraggingData {
+                data, id,
+            };
+
+            ui.memory().data.insert_temp(egui::Id::null(), dragging_data);
             ui.memory().data.insert_temp(egui::Id::null(), DraggingActive);
             // println!("drag_start");
+        }
+
+
+        if !ui.memory().is_being_dragged(id) {
+            let mut mem = ui.memory();
+            if mem.data.get_temp::<WasDropped>(id).is_some() {
+                mem.data.remove::<WasDropped>(id);
+                drop_fn();
+            }
         }
 
         if res.hovered() {
@@ -76,7 +104,7 @@ where
     };
 
     let mut drop_data = if is_being_dragged {
-        ui.memory().data.get_temp::<T>(egui::Id::null())
+        ui.memory().data.get_temp::<DraggingData<T>>(egui::Id::null())
     } else { None };
     let can_accept_drag = drop_data.is_some();
 
@@ -119,10 +147,11 @@ where
         if res.hovered() {
             // println!("drop");
             let data = drop_data.take().unwrap();
-            on_drop(data);
+            on_drop(data.data);
 
             // println!("remove");
             ui.memory().data.remove::<T>(egui::Id::null());
+            ui.memory().data.insert_temp(data.id, WasDropped);
             ui.memory().data.remove::<DraggingActive>(egui::Id::null());
             // println!("drop");
         } else {

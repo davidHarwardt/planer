@@ -7,7 +7,7 @@ use chrono::{prelude::*, Duration};
 use serde_with::{serde_as, DurationSeconds};
 use uuid::Uuid;
 
-use self::{calendar::Calendar, uuid_ref::{UuidRef, AsUuid}};
+use self::{calendar::{Calendar, Event}, uuid_ref::{UuidRef, AsUuid}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -36,12 +36,24 @@ impl PlanerData {
     }
 
     pub fn revalidate(&mut self) {
-        for exam in self.unfinished_exams.iter_mut() {
+        for exam in &mut self.unfinished_exams {
             exam.lock().unwrap().revalidate(&self.students, &self.teachers);
         }
 
-        for exam in self.finished_exams.iter_mut() {
+        for exam in &mut self.finished_exams {
             exam.lock().unwrap().revalidate(&self.students, &self.teachers);
+        }
+
+        for student in &mut self.students {
+            student.lock().unwrap().revalidate(&self.finished_exams);
+        }
+
+        for teacher in &mut self.teachers {
+            teacher.lock().unwrap().revalidate(&self.finished_exams);
+        }
+
+        for room in &mut self.rooms {
+            room.revalidate(&self.finished_exams);
         }
     }
 
@@ -60,6 +72,66 @@ impl PlanerData {
             calendar: Calendar::new(),
             subjects: subjects.to_vec()
         })));
+    }
+
+    pub fn book_exam(exam_ref: UuidRef<Mutex<Exam>>, room: &mut Room, start_time: DateTime<Utc>) {
+        if let Some(exam) = exam_ref.get() {
+            let mut exam = exam.lock().unwrap();
+
+            let ev = Event::new(start_time, exam.duration, exam_ref.clone());
+
+            for student in &mut exam.examinees {
+                student.get().map(|v| {
+                    v.lock().unwrap().calendar.add_event(ev.clone());
+                });
+            }
+            
+            for teacher in &mut exam.examiners {
+                teacher.as_ref().map(|v| v.get().map(|v| {
+                    v.lock().unwrap().calendar.add_event(ev.clone());
+                }));
+            }
+
+            room.calendar.add_event(ev);
+        }
+    }
+
+    pub fn unbook_exam(exam_ref: UuidRef<Mutex<Exam>>, room: &mut Room, start_time: DateTime<Utc>) {
+        if let Some(exam) = exam_ref.get() {
+            let mut exam = exam.lock().unwrap();
+
+            let ev = Event::new(start_time, exam.duration, exam_ref);
+
+            for student in &mut exam.examinees {
+                student.get().map(|v| {
+                    v.lock().unwrap().calendar.remove_event(&ev);
+                });
+            }
+            
+            for teacher in &mut exam.examiners {
+                teacher.as_ref().map(|v| v.get().map(|v| {
+                    v.lock().unwrap().calendar.remove_event(&ev);
+                }));
+            }
+
+            room.calendar.remove_event(&ev);
+        }
+    }
+
+    pub fn unfinish_exam(&mut self, exam: UuidRef<Mutex<Exam>>) {
+        let idx = self.finished_exams.iter().position(|v| v.lock().unwrap().uuid == exam.uuid());
+        idx.map(|idx| {
+            let ex = self.finished_exams.remove(idx);
+            self.unfinished_exams.push(ex);
+        });
+    }
+
+    pub fn finish_exam(&mut self, exam: UuidRef<Mutex<Exam>>) {
+        let idx = self.unfinished_exams.iter().position(|v| v.lock().unwrap().uuid == exam.uuid());
+        idx.map(|idx| {
+            let ex = self.unfinished_exams.remove(idx);
+            self.finished_exams.push(ex);
+        });
     }
 
     pub fn add_exam(&mut self, id: String, duration: Duration, subjects: Vec<String>, tags: Vec<Tag>) {
@@ -178,7 +250,7 @@ impl AsUuid for Room { fn as_uuid(&self) -> Uuid { self.uuid } }
 
 impl Room {
     fn revalidate(&mut self, exams: &[Arc<Mutex<Exam>>]) {
-        // self.calendar.revalidate(exams)
+        self.calendar.revalidate(exams)
     }
 }
 
@@ -220,6 +292,12 @@ pub struct Student {
 }
 impl AsUuid for Student { fn as_uuid(&self) -> Uuid { self.name.uuid } }
 
+impl Student {
+    fn revalidate(&mut self, data: &[Arc<Mutex<Exam>>]) {
+        self.calendar.revalidate(data);
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Teacher {
     pub name: Name,
@@ -229,4 +307,9 @@ pub struct Teacher {
 }
 impl AsUuid for Teacher { fn as_uuid(&self) -> Uuid { self.name.uuid } }
 
+impl Teacher {
+    fn revalidate(&mut self, data: &[Arc<Mutex<Exam>>]) {
+        self.calendar.revalidate(data);
+    }
+}
 

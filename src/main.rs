@@ -8,7 +8,7 @@ mod search;
 
 fn main() {
     let native_options = eframe::NativeOptions {
-        decorated: false,
+        decorated: true,
         resizable: true,
 
         ..Default::default()

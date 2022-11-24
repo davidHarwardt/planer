@@ -21,6 +21,16 @@ pub struct PlanerApp {
     dummy_string: String,
 }
 
+enum ExamView {
+    Edit,
+    InRoom,
+    InSearch,
+}
+
+impl ExamView {
+    fn shows_remove(&self) -> bool { matches!(self, ExamView::InRoom) }
+    fn show_reduced(&self) -> bool { matches!(self, ExamView::InRoom) }
+}
 
 #[derive(Debug)]
 struct AddExamData {
@@ -149,20 +159,20 @@ impl eframe::App for PlanerApp {
                         if tab(&mut col[1], self.tab == Tab::Exams, "exams").clicked() { self.tab = Tab::Exams }
                     });
 
-                    col[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(CLOSE_WINDOW_ICON).clicked() { frame.close() }
-                        if ui.button(MAXIMIZE_WINDOW_ICON).clicked() { self.maximized = !self.maximized; frame.set_fullscreen(self.maximized) }
-                    });
+                    // col[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    //     if ui.button(CLOSE_WINDOW_ICON).clicked() { frame.close() }
+                    //     if ui.button(MAXIMIZE_WINDOW_ICON).clicked() { self.maximized = !self.maximized; frame.set_fullscreen(self.maximized) }
+                    // });
                 });
             });
 
 
             {
-                let res = ui.interact(ui.min_rect(), ui.id().with("title_bar_drag"), egui::Sense::click());
+                // let res = ui.interact(ui.min_rect(), ui.id().with("title_bar_drag"), egui::Sense::click());
                 
-                if res.is_pointer_button_down_on() {
-                    frame.drag_window();
-                }
+                // if res.is_pointer_button_down_on() {
+                //     frame.drag_window();
+                // }
             }
         });
 
@@ -194,14 +204,18 @@ impl PlanerApp {
 
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
 
+                let mut finish_exam = None;
                 for (i, exam) in self.data.unfinished_exams.iter().enumerate() {
                     let uuid = { UuidRef::new(exam) };
                     drag_source(ui, ui.id().with((i, "exam_drag_calendar")), |ui| {
                         let mut exam = exam.lock().unwrap();
 
-                        Self::show_exam(ui, &mut exam, false, || {})
-                    }, || DraggingExam(uuid));
+                        Self::show_exam(ui, &mut exam, ExamView::InSearch, || {})
+                    }, || DraggingExam(uuid.clone()), || {
+                        finish_exam = Some(uuid.clone());
+                    });
                 }
+                finish_exam.map(|v| self.data.finish_exam(v));
 
                 ui.add_space(5.0);
                 ui.vertical_centered_justified(|ui| {
@@ -210,6 +224,23 @@ impl PlanerApp {
                     // ui.label("end");
                 });
                 ui.add_space(5.0);
+            });
+        });
+
+        egui::TopBottomPanel::top("compute_panel").show(ctx, |ui| {
+            egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
+                if ui.button("compute").clicked() {
+                    println!("compute");
+                }
+            });
+        });
+
+        egui::SidePanel::right("add_exam_panel").resizable(false).show(ctx, |ui| {
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
+                ui.set_width(100.0);
+                if ui.add(egui::Button::new(ADD_ICON)).clicked() {
+                    self.data.add_room(String::new(), Vec::new());
+                }
             });
         });
 
@@ -229,7 +260,8 @@ impl PlanerApp {
                 for (i, room) in self.data.rooms.iter_mut().enumerate() {
                     let idx = i as f32;
                     let rect = egui::Rect::from_min_size(
-                        ui.min_rect().left_top() + vec2(idx * (room_width + padding) + time_width + padding * 2.0, 0.0),
+                                                // (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
+                        top_left + vec2(idx * (room_width + padding * 2.0) + time_width + padding * 2.0, 0.0),
                         vec2(room_width, header_height));
 
                     let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
@@ -246,13 +278,29 @@ impl PlanerApp {
                                     let res = ui.button(format!("{tag}"))
                                         .on_hover_text_at_pointer("click to edit, right-click to remove");
 
+                                    if res.clicked() {
+                                        println!("edit ({}: {})", file!(), line!());
+                                    }
+
                                     !res.secondary_clicked()
+                                });
+
+                                struct TagName(String);
+                                let add_tag_modal = Modal::new(ui.ctx(), ui.id().with(("add_tag_modal", i)), |v: TagName| {
+                                    room.tags.push(v.0);
+                                });
+                                add_tag_modal.show(|ui, v| {
+                                    ui.set_width(200.0);
+                                    ui.add(egui::TextEdit::singleline(&mut v.0).hint_text("tag"));
+
+                                    let can_submit = !v.0.is_empty();
+                                    add_tag_modal.show_close_submit(ui, can_submit);
                                 });
 
                                 if ui.button(ADD_ICON)
                                     .on_hover_text_at_pointer("click to add tag")
                                 .clicked() {
-                                    println!("add");
+                                    add_tag_modal.open(TagName(String::new()));
                                 }
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
@@ -285,7 +333,8 @@ impl PlanerApp {
                         let total_height = total_time * minute_height + header_height + padding * 2.0;
                         ui.set_height(total_height);
 
-                        for (i, lesson) in self.data.timetable.times.iter().enumerate() {
+                        let mut remove_exam = None;
+                        for (_i, lesson) in self.data.timetable.times.iter().enumerate() {
                             let start = lesson.start.signed_duration_since(start_t).num_minutes() as f32;
                             let duration = lesson.duration.num_minutes() as f32;
 
@@ -295,6 +344,7 @@ impl PlanerApp {
                             );
 
                             let mut ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::TOP));
+                            ui.set_max_height(duration * minute_height);
 
                             ui.group(|ui| {
                                 ui.label(lesson.start.format("%H:%M").to_string());
@@ -306,8 +356,11 @@ impl PlanerApp {
                             for (i, room) in self.data.rooms.iter_mut().enumerate() {
                                 let lesson_start = current_day.and_time(lesson.start).unwrap();
                                 let bookings = room.calendar.get_events_at(&lesson_start);
+                                let mut should_unbook = false;
+                                let mut should_unbook_2 = false;
                                 let booking = bookings.last();
                                 if let Some(booking) = booking {
+                                    let exam = booking.data.clone();
                                     if booking.start == lesson_start {
                                         let duration = booking.duration.num_minutes() as f32;
                                         let rect = egui::Rect::from_min_size(
@@ -319,17 +372,30 @@ impl PlanerApp {
                                         let mut ui = ui.child_ui(rect, egui::Layout::top_down(egui::Align::TOP));
 
                                         let id = ui.id().with(("room_exam_drag", i, &room.number[..]));
-                                        drag_source(&mut ui, id, |ui| {
-                                            if let Some(exam) = booking.data.get() {
-                                                let mut exam = exam.lock().unwrap();
-                                                Self::show_exam(ui, &mut exam, false, || println!("remove"))
-                                            } else { ui.label("<invalid>"); None }
-                                        }, || {
-                                            // DraggingExam(booking.data)
-                                            ()
-                                        });
+                                        if let Some(exam) = booking.data.get() {
+                                            let mut exam = exam.lock().unwrap();
+                                            if exam.pinned {
+                                                Self::show_exam(&mut ui, &mut exam, ExamView::InRoom, || {
+                                                    should_unbook_2 = true;
+                                                    remove_exam = Some(booking.data.clone());
+                                                });
+                                            } else {
+                                                drag_source(&mut ui, id, |ui| {
+                                                    Self::show_exam(ui, &mut exam, ExamView::InRoom, || {
+                                                        should_unbook_2 = true;
+                                                        remove_exam = Some(booking.data.clone());
+                                                    })
+                                                }, || {
+                                                    // DraggingExam(booking.data)
+                                                    DraggingExam(booking.data.clone())
+                                                }, || {
+                                                    should_unbook = true;
+                                                });
+                                            }
+                                        } else { ui.label("<invalid>"); }
                                     }
 
+                                    if should_unbook || should_unbook_2 { PlanerData::unbook_exam(exam, room, lesson_start) }
                                 } else {
                                     let rect = egui::Rect::from_min_size(
                                         top_left + vec2(
@@ -344,20 +410,15 @@ impl PlanerApp {
                                         drop_target(ui, |ui| {
                                             ui.allocate_space(ui.available_size());
                                         }, |v: DraggingExam| {
-                                            let duration = if let Some(exam) = v.0.get() {
-                                                exam.lock().unwrap().duration
-                                            } else {
-                                                println!("invalid exam");
-                                                Duration::minutes(30)
-                                            };
-
-                                            room.calendar.add_event(Event::new(lesson_start, duration, v.0));
+                                            PlanerData::book_exam(v.0, room, lesson_start);
                                         });
                                     });
                                 }
                                 ui.allocate_space(ui.available_size());
+
                             }
                         }
+                        remove_exam.map(|v| self.data.unfinish_exam(v));
                     }
                         
 
@@ -500,7 +561,7 @@ impl PlanerApp {
                                                     (ui.available_width(), 0.0),
                                                     egui::Button::new(egui::RichText::new(format!("{}", t.shorthand)).heading()))
                                                .on_hover_text_at_pointer("drag to insert");
-                                            }, || dragging_teacher);
+                                            }, || dragging_teacher, || {});
                                         });
                                         ui.allocate_space(vec2(ui.available_width(), 0.0));
                                         // if ui.add_sized((ui.available_width(), 0.0), egui::Button::new(egui::RichText::new(format!("{}", t.name)).heading()))
@@ -510,14 +571,29 @@ impl PlanerApp {
                                         ui.separator();
                                         ui.allocate_space(vec2(ui.available_width(), 0.0));
                                         ui.horizontal_wrapped(|ui| {
-                                            t.subjects.retain(|v| {
+                                            let mut j = 0;
+                                            t.subjects.retain_mut(|v| {
                                                 let res = ui.button(format!("{v}"))
                                                     .on_hover_text_at_pointer("click to edit, right-click to remove");
 
+                                                struct EditSubjectData(String);
+                                                let v_c = v.clone();
+                                                let edit_subject_modal = Modal::new(ui.ctx(), ui.id().with(("edit_subject_modal", i, j)), |data: EditSubjectData| {
+                                                    *v = data.0;
+                                                });
+                                                edit_subject_modal.show(|ui, v| {
+                                                    ui.set_width(200.0);
+                                                    ui.add(egui::TextEdit::singleline(&mut v.0).hint_text("subject"));
+
+                                                    let can_submit = !v.0.is_empty();
+                                                    edit_subject_modal.show_close_submit(ui, can_submit);
+                                                });
+
                                                 if res.clicked() {
-                                                    println!("edit");
+                                                    edit_subject_modal.open(EditSubjectData(v_c));
                                                 }
 
+                                                j += 1;
                                                 !res.secondary_clicked()
                                             });
 
@@ -655,7 +731,7 @@ impl PlanerApp {
                                                     (ui.available_width(), 0.0),
                                                     egui::Button::new(egui::RichText::new("").heading()))
                                                .on_hover_text_at_pointer("drag to insert");
-                                            }, || dragging_student);
+                                            }, || dragging_student, || {});
                                         });
                                         ui.allocate_space(vec2(ui.available_width(), 0.0));
                                         // if ui.add_sized((ui.available_width(), 0.0), egui::Button::new(egui::RichText::new(format!("{}", t.name)).heading()))
@@ -723,7 +799,7 @@ impl PlanerApp {
                         ui.columns(num_cols, |col| {
                             for (j, (exam, ui)) in exams.iter().zip(col.iter_mut()).enumerate() {
                                 let mut exam = exam.lock().unwrap();
-                                Self::show_exam(ui, &mut exam, true, || remove_exam = Some(i * num_cols + j));
+                                Self::show_exam(ui, &mut exam, ExamView::Edit, || remove_exam = Some(i * num_cols + j));
                             }
                         });
                     }
@@ -750,238 +826,266 @@ impl PlanerApp {
         });
     }
 
-    fn show_exam(ui: &mut egui::Ui, exam: &mut Exam, edit_view: bool, on_remove: impl FnOnce()) -> Option<egui::Response> {
+    fn show_exam(ui: &mut egui::Ui, exam: &mut Exam, view: ExamView, on_remove: impl FnOnce()) -> Option<egui::Response> {
         let res = egui::Frame::group(ui.style()).fill(ui.style().noninteractive().bg_fill).show(ui, |ui| {
-            if edit_view {
+            match view {
+                ExamView::Edit => {
+                    egui::TextEdit::singleline(&mut exam.id)
+                        .hint_text("id")
+                        .font(egui::TextStyle::Heading)
+                    .show(ui);
 
-                egui::TextEdit::singleline(&mut exam.id)
-                    .hint_text("id")
-                    .font(egui::TextStyle::Heading)
-                .show(ui);
+                    ui.label(egui::RichText::new(format!("{}", exam.uuid)).weak().size(10.0)); // could use tooltip
 
-                ui.label(egui::RichText::new(format!("{}", exam.uuid)).weak().size(10.0)); // could use tooltip
+                    {
+                        let mut minutes = exam.duration.num_minutes();
+                        ui.horizontal(|ui| {
+                            ui.label("duration: ");
+                            ui.add(egui::DragValue::new(&mut minutes).speed(2.0).suffix("min"));
+                        });
+                        exam.duration = Duration::minutes(minutes);
+                    }
 
-                {
-                    let mut minutes = exam.duration.num_minutes();
-                    ui.horizontal(|ui| {
-                        ui.label("duration: ");
-                        ui.add(egui::DragValue::new(&mut minutes).speed(2.0).suffix("min"));
+                    ui.separator();
+
+                    ui.group(|ui| {
+                        ui.weak("subjects");
+                        ui.horizontal_wrapped(|ui| {
+                            let mut i = 0;
+                            exam.subjects.retain_mut(|v| {
+                                let res = ui.button(format!("{v}")).on_hover_text_at_pointer("click to rename, right-click to remove");
+
+                                struct RenameSubjectData;
+                                let rename_subject_modal = Modal::new(ui.ctx(), ui.id().with(("rename_subject_modal", i, exam.uuid)), |_: RenameSubjectData| {});
+                                rename_subject_modal.show(|ui, _| {
+                                    ui.set_width(200.0);
+                                    ui.add(egui::TextEdit::singleline(v).hint_text("subject"));
+                                    
+                                    let can_submit = !v.is_empty();
+                                    rename_subject_modal.show_close_submit(ui, can_submit);
+                                });
+
+                                i += 1;
+                                if res.clicked() {
+                                    rename_subject_modal.open(RenameSubjectData);
+
+                                    true
+                                } else if res.secondary_clicked() { false }
+                                  else { true }
+                            });
+
+                            let modal = Modal::new(ui.ctx(), ui.id().with(("add_subject_modal", exam.uuid)), |v: SubjectModalData| {
+                                exam.subjects.push(v.name);
+                            });
+                            modal.show(|ui, data| {
+                                ui.set_max_width(200.0);
+                                egui::TextEdit::singleline(&mut data.name)
+                                    .hint_text("subject")
+                                .show(ui);
+
+                                let can_submit = !data.name.is_empty();
+                                modal.show_close_submit(ui, can_submit);
+                            });
+
+                            if ui.button(ADD_ICON).on_hover_text_at_pointer("add subject").clicked() { modal.open(Default::default()) }
+                        });
                     });
-                    exam.duration = Duration::minutes(minutes);
-                }
+                    ui.group(|ui| {
+                        ui.weak("examiners");
+                        ui.columns(exam.examiners.len(), |col| {
+                            for (examiner, ui) in exam.examiners.iter_mut().zip(col.iter_mut()) {
+                                if let Some(v) = examiner {
+                                    if let Some(v) = v.get() {
+                                        let v = v.lock().unwrap();
+                                        ui.add_space(2.0);
+                                        let res = ui.button(format!("{}", v.shorthand))
+                                            .on_hover_text_at_pointer(format!("{}", v.name))
+                                            .on_hover_text_at_pointer("click to jump to, right-click to remove");
 
-                ui.separator();
+                                        // todo: implement click to jump to
 
-                ui.group(|ui| {
-                    ui.weak("subjects");
-                    ui.horizontal_wrapped(|ui| {
-                        exam.subjects.retain(|v| {
-                            let res = ui.button(format!("{v}")).on_hover_text_at_pointer("click to rename, right-click to remove");
-
-                            if res.clicked() {
-                                println!("rename");
-                                true
-                            } else if res.secondary_clicked() { false }
-                              else { true }
-                        });
-
-                        let modal = Modal::new(ui.ctx(), ui.id().with("add_subject_modal"), |v: SubjectModalData| {
-                            exam.subjects.push(v.name);
-                        });
-                        modal.show(|ui, data| {
-                            ui.set_max_width(200.0);
-                            egui::TextEdit::singleline(&mut data.name)
-                                .hint_text("subject")
-                            .show(ui);
-
-                            let can_submit = !data.name.is_empty();
-                            modal.show_close_submit(ui, can_submit);
-                        });
-
-                        if ui.button(ADD_ICON).on_hover_text_at_pointer("add subject").clicked() { modal.open(Default::default()) }
-                    });
-                });
-                ui.group(|ui| {
-                    ui.weak("examiners");
-                    ui.columns(exam.examiners.len(), |col| {
-                        for (examiner, ui) in exam.examiners.iter_mut().zip(col.iter_mut()) {
-                            if let Some(v) = examiner {
-                                if let Some(v) = v.get() {
-                                    let v = v.lock().unwrap();
-                                    ui.add_space(2.0);
-                                    let res = ui.button(format!("{}", v.shorthand))
-                                        .on_hover_text_at_pointer(format!("{}", v.name))
-                                        .on_hover_text_at_pointer("click to jump to, right-click to remove");
-
-                                    // todo: implement click to jump to
-
-                                    if res.secondary_clicked() {
-                                        *examiner = None;
+                                        if res.secondary_clicked() {
+                                            *examiner = None;
+                                        }
+                                    } else {
+                                        ui.add_space(2.0);
+                                        let res = ui.button(egui::RichText::new("<invalid>").color(egui::Color32::RED))
+                                            .on_hover_text_at_pointer(format!("uuid \"{}\" is invalid", v.uuid()))
+                                            .on_hover_text_at_pointer(format!("click to revalidate, right-click to remove"));
+                                        // todo add click to revalidate func
+                                        if res.secondary_clicked() { *examiner = None }
                                     }
+
                                 } else {
-                                    ui.add_space(2.0);
-                                    let res = ui.button(egui::RichText::new("<invalid>").color(egui::Color32::RED))
-                                        .on_hover_text_at_pointer(format!("uuid \"{}\" is invalid", v.uuid()))
-                                        .on_hover_text_at_pointer(format!("click to revalidate, right-click to remove"));
-                                    // todo add click to revalidate func
-                                    if res.secondary_clicked() { *examiner = None }
+                                    drop_target(ui, |ui| {
+                                        // ui.allocate_space(ui.min_size());
+                                        ui.add_sized(ui.min_size(), egui::Label::new(""));
+                                    }, |v: DraggingTeacher| {
+                                        *examiner = Some(v.0);
+                                    });
+                                }
+                            }
+
+                            // if ui.button("+").on_hover_text("add examiner").clicked() { exam.examiners.push() };
+                        });
+                    });
+                    ui.group(|ui| {
+                        let mut add_examiees = Vec::new();
+                        ui.weak("examinees");
+                        drop_target(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                exam.examinees.retain(|v| {
+                                    if let Some(v) = v.get() {
+                                        let v = v.lock().unwrap();
+                                        let res = ui.button(format!("{}", v.name)).on_hover_text_at_pointer("click to jump to, right-click to remove");
+
+                                        // todo: implement click to jump to
+
+                                        !res.secondary_clicked()
+                                    } else {
+                                        let res = ui.button(egui::RichText::new("<invalid>").color(egui::Color32::RED))
+                                            .on_hover_text_at_pointer(format!("uuid: \"{}\" is invalid", v.uuid()))
+                                            .on_hover_text_at_pointer("click to revalidate, right-click to remove");
+
+                                        // todo add click to revalidate fn
+
+                                        !res.secondary_clicked()
+                                    }
+                                });
+                            });
+                        }, |v: DraggingStudent| add_examiees.push(v.0));
+
+                        exam.examinees.extend(add_examiees);
+                    });
+                    ui.group(|ui| {
+                        ui.weak("tags");
+                        ui.horizontal_wrapped(|ui| {
+                            exam.tags.retain_mut(|v| {
+                                let mut res = ui.selectable_label(v.required, format!("{}", v.name));
+
+                                if v.required { res = res.on_hover_text_at_pointer("required") }
+
+                                let res = res.on_hover_text_at_pointer("click to edit, right-click to remove")
+                                             .on_hover_text_at_pointer("double-click to toggle required");
+
+                                if res.double_clicked() { v.required = !v.required }
+
+                                !res.secondary_clicked()
+                            });
+
+                            let modal = Modal::new(ui.ctx(), ui.id().with(("add_tag_modal", exam.uuid)), |v: Tag| { exam.tags.push(v) });
+                            modal.show(|ui, data| {
+                                ui.set_max_width(200.0);
+                                egui::TextEdit::singleline(&mut data.name)
+                                    .hint_text("tag name")
+                                .show(ui);
+
+                                ui.checkbox(&mut data.required, "required")
+                                    .on_hover_text_at_pointer("if the tag is not required it is treated as a hint for the solver");
+
+                                let can_submit = !data.name.is_empty();
+                                modal.show_close_submit(ui, can_submit);
+                            });
+
+                            if ui.button(ADD_ICON).on_hover_text_at_pointer("add tag").clicked() { modal.open(Tag {
+                                name: String::new(),
+                                required: false,
+                            }) }
+                        });
+                    });
+
+                    ui.columns(3, |col| {
+                        if col[2].add_sized(col[2].min_size(), egui::Button::new(CLOSE_WINDOW_ICON)).on_hover_text_at_pointer("delete exam").clicked() {
+                            on_remove()
+                        }
+                    });
+
+                    None
+                },
+                _ => {
+                    if matches!(view, ExamView::InRoom) {
+                        ui.set_height(ui.available_height());
+                    }
+
+                    let _title_res = ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.heading(if exam.id.is_empty() { "[unnamed]" } else { &exam.id[..] });
+                        });
+                        if view.shows_remove() {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_enabled_ui(!exam.pinned, |ui| {
+                                    if ui.button(CLOSE_WINDOW_ICON).on_hover_text_at_pointer("remove item from the room").clicked() { on_remove() }
+                                });
+                                if ui.selectable_label(exam.pinned, PIN_ICON)
+                                    .on_hover_text_at_pointer("pin item")
+                                .clicked() {
+                                    exam.pinned = !exam.pinned;
+                                }
+                            });
+                        }
+                    });
+
+                    let res = ui.scope(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.weak(format!("duration: {}min", exam.duration.num_minutes()));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                for subject in &exam.subjects {
+                                    ui.label(format!("{subject}"));
                                 }
 
-                            } else {
-                                drop_target(ui, |ui| {
-                                    // ui.allocate_space(ui.min_size());
-                                    ui.add_sized(ui.min_size(), egui::Label::new(""));
-                                }, |v: DraggingTeacher| {
-                                    *examiner = Some(v.0);
-                                });
-                            }
-                        }
-
-                        // if ui.button("+").on_hover_text("add examiner").clicked() { exam.examiners.push() };
-                    });
-                });
-                ui.group(|ui| {
-                    let mut add_examiees = Vec::new();
-                    ui.weak("examinees");
-                    drop_target(ui, |ui| {
+                                if exam.subjects.len() == 0 { ui.weak("<no subjects>"); }
+                            });
+                        });
                         ui.horizontal_wrapped(|ui| {
-                            exam.examinees.retain(|v| {
-                                if let Some(v) = v.get() {
-                                    let v = v.lock().unwrap();
-                                    let res = ui.button(format!("{}", v.name)).on_hover_text_at_pointer("click to jump to, right-click to remove");
-
-                                    // todo: implement click to jump to
-
-                                    !res.secondary_clicked()
-                                } else {
-                                    let res = ui.button(egui::RichText::new("<invalid>").color(egui::Color32::RED))
-                                        .on_hover_text_at_pointer(format!("uuid: \"{}\" is invalid", v.uuid()))
-                                        .on_hover_text_at_pointer("click to revalidate, right-click to remove");
-
-                                    // todo add click to revalidate fn
-
-                                    !res.secondary_clicked()
+                            ui.columns(exam.examiners.len(), |col| {
+                                for (examiner, ui) in exam.examiners.iter().zip(col.iter_mut()) {
+                                    ui.centered_and_justified(|ui| {
+                                        if let Some(v) = examiner {
+                                            if let Some(v) = v.get() {
+                                                let v = v.lock().unwrap();
+                                                ui.label(format!("{}", v.shorthand)).on_hover_text_at_pointer(format!("{}", v.name));
+                                            } else {
+                                                ui.label(egui::RichText::new("<invalid>").color(egui::Color32::RED));
+                                            }
+                                        } else {
+                                            ui.weak("―");
+                                        }
+                                    });
                                 }
                             });
                         });
-                    }, |v: DraggingStudent| add_examiees.push(v.0));
+                        if !view.show_reduced() {
+                            ui.horizontal_wrapped(|ui| {
+                                for (i, examinee) in exam.examinees.iter().enumerate() {
+                                    let comma = if (i + 1) < exam.examinees.len() { ", " } else { "" };
+                                    if let Some(examinee) = examinee.get() {
+                                        let examinee = examinee.lock().unwrap();
+                                        ui.label(format!("{}{}", examinee.name, comma));
+                                    } else {
+                                        ui.label(egui::RichText::new(format!("<invalid>{}", comma)).color(egui::Color32::RED));
+                                    }
+                                }
 
-                    exam.examinees.extend(add_examiees);
-                });
-                ui.group(|ui| {
-                    ui.weak("tags");
-                    ui.horizontal_wrapped(|ui| {
-                        exam.tags.retain_mut(|v| {
-                            let mut res = ui.selectable_label(v.required, format!("{}", v.name));
+                                if exam.examinees.is_empty() { ui.weak("<no examinees>"); }
+                            });
+                        }
+                        if !view.show_reduced() {
+                            ui.separator();
+                            ui.horizontal_wrapped(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for (i, tag) in exam.tags.iter().filter(|v| v.required).enumerate() {
+                                        let comma = if (i + 1) < exam.examinees.len() { ", " } else { "" };
+                                        ui.label(format!("{}{comma}", tag.name));
+                                    }
+                                    if exam.tags.is_empty() { ui.weak("<no tags>"); }
+                                });
 
-                            if v.required { res = res.on_hover_text_at_pointer("required") }
-
-                            let res = res.on_hover_text_at_pointer("click to edit, right-click to remove")
-                                         .on_hover_text_at_pointer("double-click to toggle required");
-
-                            if res.double_clicked() { v.required = !v.required }
-
-                            !res.secondary_clicked()
-                        });
-
-                        let modal = Modal::new(ui.ctx(), ui.id().with("add_tag_modal"), |v: Tag| { exam.tags.push(v) });
-                        modal.show(|ui, data| {
-                            ui.set_max_width(200.0);
-                            egui::TextEdit::singleline(&mut data.name)
-                                .hint_text("tag name")
-                            .show(ui);
-
-                            ui.checkbox(&mut data.required, "required")
-                                .on_hover_text_at_pointer("if the tag is not required it is treated as a hint for the solver");
-
-                            let can_submit = !data.name.is_empty();
-                            modal.show_close_submit(ui, can_submit);
-                        });
-
-                        if ui.button(ADD_ICON).on_hover_text_at_pointer("add tag").clicked() { modal.open(Tag {
-                            name: String::new(),
-                            required: false,
-                        }) }
-                    });
-                });
-
-                ui.columns(3, |col| {
-                    if col[2].add_sized(col[2].min_size(), egui::Button::new(CLOSE_WINDOW_ICON)).on_hover_text_at_pointer("delete exam").clicked() {
-                        on_remove()
-                    }
-                });
-
-                None
-            } else {
-                let title_res = ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.heading(if exam.id.is_empty() { "[unnamed]" } else { &exam.id[..] });
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(CLOSE_WINDOW_ICON).on_hover_text_at_pointer("remove item from the room").clicked() { on_remove() }
-                            if ui.selectable_label(exam.pinned, PIN_ICON)
-                                .on_hover_text_at_pointer("pin item")
-                            .clicked() {
-                                exam.pinned = !exam.pinned;
-                            }
-                    });
-                });
-
-                let res = ui.scope(|ui| {
-                    ui.weak(format!("duration: {}min", exam.duration.num_minutes()));
-                    ui.horizontal_wrapped(|ui| {
-                        for subject in &exam.subjects {
-                            ui.label(format!("{subject}"));
+                            });
                         }
 
-                        if exam.subjects.len() == 0 { ui.weak("<no subjects>"); }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.columns(exam.examiners.len(), |col| {
-                            for (examiner, ui) in exam.examiners.iter().zip(col.iter_mut()) {
-                                ui.centered_and_justified(|ui| {
-                                    if let Some(v) = examiner {
-                                        if let Some(v) = v.get() {
-                                            let v = v.lock().unwrap();
-                                            ui.label(format!("{}", v.shorthand)).on_hover_text_at_pointer(format!("{}", v.name));
-                                        } else {
-                                            ui.label(egui::RichText::new("<invalid>").color(egui::Color32::RED));
-                                        }
-                                    } else {
-                                        ui.weak("―");
-                                    }
-                                });
-                            }
-                        });
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            for (i, examinee) in exam.examinees.iter().enumerate() {
-                                let comma = if (i + 1) < exam.examinees.len() { ", " } else { "" };
-                                if let Some(examinee) = examinee.get() {
-                                    let examinee = examinee.lock().unwrap();
-                                    ui.label(format!("{}{}", examinee.name, comma));
-                                } else {
-                                    ui.label(egui::RichText::new(format!("<invalid>{}", comma)).color(egui::Color32::RED));
-                                }
-                            }
-
-                            if exam.examinees.is_empty() { ui.weak("<no examinees>"); }
-                        });
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            for (i, tag) in exam.tags.iter().filter(|v| v.required).enumerate() {
-                                let comma = if (i + 1) < exam.examinees.len() { ", " } else { "" };
-                                ui.label(format!("{}{comma}", tag.name));
-                            }
-                            if exam.tags.is_empty() { ui.weak("<no tags>"); }
-                        });
-
-                    });
-
-                }).response;
-                Some(res)
+                    }).response;
+                    Some(res)
+                },
             }
         }).inner;
         // println!("{res:?}");
