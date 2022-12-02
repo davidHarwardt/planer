@@ -5,6 +5,7 @@ mod drag_and_drop;
 mod planer;
 mod modal;
 mod search;
+mod solver;
 
 fn main() {
     let native_options = eframe::NativeOptions {

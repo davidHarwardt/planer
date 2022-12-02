@@ -7,6 +7,8 @@ use chrono::{prelude::*, Duration};
 use serde_with::{serde_as, DurationSeconds};
 use uuid::Uuid;
 
+use crate::solver::{Constraints, solve};
+
 use self::{calendar::{Calendar, Event}, uuid_ref::{UuidRef, AsUuid}};
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +22,9 @@ pub struct PlanerData {
 
     pub rooms: Vec<Room>,
     pub timetable: Timetable,
+
+    #[serde(skip)]
+    pub constraints: Constraints,
 }
 
 impl PlanerData {
@@ -62,6 +67,29 @@ impl PlanerData {
             name: Name { uuid: Uuid::new_v4(), first, last, title },
             calendar: Calendar::new(),
         })));
+    }
+
+    pub fn solve(&mut self) {
+        let res = solve(
+            &mut self.unfinished_exams,
+            &mut self.rooms[..],
+            &self.timetable,
+            Utc::today(),
+            |exam, (room, lesson, day)| {
+                Self::book_exam(UuidRef::new(exam), room, day.and_time(lesson.start).unwrap());
+            },
+            &self.constraints,
+        );
+
+        match res {
+            Ok(mut v) => {
+                self.finished_exams.append(&mut v.finished_exams);
+            },
+            Err(mut v) => {
+                self.finished_exams.append(&mut v.finished_exams);
+                println!("could not match all exams");
+            },
+        }
     }
 
     pub fn add_teacher(&mut self, first: String, last: String, title: Option<String>, shorthand: Option<String>, subjects: &[String]) {
@@ -141,6 +169,7 @@ impl PlanerData {
             examinees: Vec::new(),
             pinned: false,
             examiners: [None, None, None],
+            error: None,
         })));
     }
 
@@ -156,7 +185,7 @@ impl PlanerData {
 
 impl Default for PlanerData {
     fn default() -> Self {
-        let mut v = Self {
+        let v = Self {
             students: Vec::new(),
             teachers: Vec::new(),
 
@@ -164,11 +193,10 @@ impl Default for PlanerData {
             finished_exams: Vec::new(),
             rooms: Vec::new(),
             timetable: Timetable::default(),
+
+            constraints: Constraints::default(),
         };
         
-        v.add_teacher(format!("test"), format!("asdf"), None, None, &[format!("IT")]);
-        v.add_room("101".to_string(), vec!["smartboard".to_string()]);
-        v.add_room("104".to_string(), vec!["smartboard".to_string()]);
         v
     }
 }
@@ -268,6 +296,8 @@ pub struct Exam {
 
     pub subjects: Vec<String>,
     pub tags: Vec<Tag>,
+    #[serde(skip)]
+    pub error: Option<String>,
 }
 impl AsUuid for Exam { fn as_uuid(&self) -> Uuid { self.uuid } }
 

@@ -230,6 +230,7 @@ impl PlanerApp {
         egui::TopBottomPanel::top("compute_panel").show(ctx, |ui| {
             egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
                 if ui.button("compute").clicked() {
+                    self.data.solve();
                     println!("compute");
                 }
             });
@@ -334,7 +335,7 @@ impl PlanerApp {
                         ui.set_height(total_height);
 
                         let mut remove_exam = None;
-                        for (_i, lesson) in self.data.timetable.times.iter().enumerate() {
+                        for (j, lesson) in self.data.timetable.times.iter().enumerate() {
                             let start = lesson.start.signed_duration_since(start_t).num_minutes() as f32;
                             let duration = lesson.duration.num_minutes() as f32;
 
@@ -371,28 +372,31 @@ impl PlanerApp {
                                         );
                                         let mut ui = ui.child_ui(rect, egui::Layout::top_down(egui::Align::TOP));
 
-                                        let id = ui.id().with(("room_exam_drag", i, &room.number[..]));
-                                        if let Some(exam) = booking.data.get() {
-                                            let mut exam = exam.lock().unwrap();
-                                            if exam.pinned {
-                                                Self::show_exam(&mut ui, &mut exam, ExamView::InRoom, || {
-                                                    should_unbook_2 = true;
-                                                    remove_exam = Some(booking.data.clone());
-                                                });
-                                            } else {
-                                                drag_source(&mut ui, id, |ui| {
+                                        ui.push_id(("room_exam_trag_container", i, j), |ui| {
+                                            let id = ui.id().with(("room_exam_drag", i, &room.number[..]));
+                                            if let Some(exam) = booking.data.get() {
+                                                let mut exam = exam.lock().unwrap();
+                                                if exam.pinned {
                                                     Self::show_exam(ui, &mut exam, ExamView::InRoom, || {
                                                         should_unbook_2 = true;
                                                         remove_exam = Some(booking.data.clone());
-                                                    })
-                                                }, || {
-                                                    // DraggingExam(booking.data)
-                                                    DraggingExam(booking.data.clone())
-                                                }, || {
-                                                    should_unbook = true;
-                                                });
-                                            }
-                                        } else { ui.label("<invalid>"); }
+                                                    });
+                                                } else {
+                                                    drag_source(ui, id, |ui| {
+                                                        Self::show_exam(ui, &mut exam, ExamView::InRoom, || {
+                                                            should_unbook_2 = true;
+                                                            remove_exam = Some(booking.data.clone());
+                                                        })
+                                                    }, || {
+                                                        // DraggingExam(booking.data)
+                                                        DraggingExam(booking.data.clone())
+                                                    }, || {
+                                                        should_unbook = true;
+                                                    });
+                                                }
+                                            } else { ui.label("<invalid>"); }
+                                        });
+
                                     }
 
                                     if should_unbook || should_unbook_2 { PlanerData::unbook_exam(exam, room, lesson_start) }
