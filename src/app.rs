@@ -99,6 +99,10 @@ impl PlanerApp {
             dummy_string: "bio-2".to_string(),
         }
     }
+
+    pub fn new_plan(&mut self) {
+        self.data = PlanerData::default();
+    }
 }
 
 const CLOSE_WINDOW_ICON: &str       = "🗙";
@@ -106,6 +110,7 @@ const MAXIMIZE_WINDOW_ICON: &str    = "🗖";
 const MINIMIZE_WINDOW_ICON: &str    = "🗕";
 const PIN_ICON: &str                = "📌";
 const ADD_ICON: &str                = "➕";
+const WARNING_ICON: &str            = "⚠";
 
 #[derive(Eq, PartialEq)]
 enum Tab {
@@ -121,32 +126,51 @@ enum PersonTab {
 
 impl eframe::App for PlanerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.update_title(frame);
+        self.run_shortcuts(ctx);
+        self.data.recompute_if_scheduled();
+
         egui::TopBottomPanel::top("top_status_bar").show(ctx, |ui| {
 
             egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
                 ui.columns(3, |col| {
                     egui::menu::bar(&mut col[0], |ui| {
                         ui.menu_button("file", |ui| {
-                            if ui.button("save").clicked() {
-                                let file = rfd::FileDialog::new()
-                                    .add_filter("json", &["json"])
-                                    .save_file();
-
-                                if let Some(path) = file {
-                                    self.data.save(path);
-                                }
+                            if ui.add(egui::Button::new("new").shortcut_text("ctrl+s")).clicked() {
+                                self.new_plan();
                             }
-                            if ui.button("load").clicked() {
-                                let file = rfd::FileDialog::new()
-                                    .add_filter("json", &["json"])
-                                    .pick_file();
 
-                                if let Some(path) = file {
-                                    self.data = PlanerData::load(path);
-                                }
+                            if ui.add(egui::Button::new("save").shortcut_text("ctrl+s")).clicked() {
+                                self.data.save();
+                            }
+
+                            if ui.add(egui::Button::new("save as").shortcut_text("ctrl+shift+s")).clicked() {
+                                self.data.save_as();
+                            }
+
+                            if ui.add(egui::Button::new("open").shortcut_text("ctrl+o")).clicked() {
+                                self.open_file();
+                            }
+
+                            if ui.add(egui::Button::new("edit template")).clicked() {
+                                self.edit_template();
                             }
 
                             if ui.button("settings").clicked() { self.settings.visible = !self.settings.visible }
+                        });
+
+                        ui.menu_button("edit", |ui| {
+                            if ui.button("import students").clicked() {
+                                println!("import students");
+                            }
+
+                            if ui.button("import teachers").clicked() {
+                                println!("import teachers");
+                            }
+
+                            if ui.button("merge plans").clicked() {
+                                println!("merge plans");
+                            }
                         });
                     });
 
@@ -195,8 +219,53 @@ struct DraggingTeacher(UuidRef<Mutex<Teacher>>);
 struct DraggingStudent(UuidRef<Mutex<Student>>);
 
 impl PlanerApp {
+    fn run_shortcuts(&mut self, ctx: &egui::Context) {
+        let input = ctx.input();
+
+        use egui::Modifiers;
+        if input.key_pressed(egui::Key::S) && input.modifiers.command_only() { self.data.save() }
+        if input.key_pressed(egui::Key::S) &&
+            (input.modifiers.matches(Modifiers::SHIFT | Modifiers::CTRL) || input.modifiers.matches(Modifiers::SHIFT | Modifiers::COMMAND))
+        { self.data.save_as() }
+
+        if input.key_pressed(egui::Key::O) && input.modifiers.command_only() { self.open_file() }
+    }
+
+    fn update_title(&self, frame: &mut eframe::Frame) {
+        let file_name = if let Some(file) = &self.data.current_file_name {
+            std::path::Path::new(file).file_name().unwrap().to_str().unwrap()
+        } else { "unnamed" };
+
+        frame.set_window_title(&format!("planer - {file_name}"));
+    }
+
+    fn open_file(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("plans and templates", &["plan", "ptemplate"])
+            .add_filter("plans", &["plan"])
+            .add_filter("planer templates", &["ptemplate"])
+            .pick_file();
+
+        if let Some(path) = file {
+            if path.to_str().unwrap().ends_with(".ptemplate") {
+                self.data = PlanerData::load_template(path);
+            } else {
+                self.data = PlanerData::load(path);
+            }
+        }
+    }
+
+    fn edit_template(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("planer templates", &["ptemplate"])
+            .pick_file();
+        if let Some(path) = file {
+            self.data = PlanerData::load(path);
+        }
+    }
+
     fn show_calendar_tab(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("exam_select_panel").resizable(true).show(ctx, |ui| {
+        egui::SidePanel::right("exam_select_panel").resizable(true).min_width(200.0).show(ctx, |ui| {
 
             ui.add_space(5.0);
             self.search_data.show(ui);
@@ -229,10 +298,20 @@ impl PlanerApp {
 
         egui::TopBottomPanel::top("compute_panel").show(ctx, |ui| {
             egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
-                if ui.button("compute").clicked() {
-                    self.data.solve();
-                    println!("compute");
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("compute")
+                        .on_hover_text_at_pointer("try to assign rooms and times to all unfinished exams")
+                    .clicked() {
+                        self.data.solve();
+                        println!("compute");
+                    }
+
+                    if ui.button("clear")
+                        .on_hover_text_at_pointer("clear all unpinned exams")
+                    .clicked() {
+                        println!("clear");
+                    }
+                });
             });
         });
 
@@ -259,6 +338,7 @@ impl PlanerApp {
 
                 let mut delete_idx = None;
                 for (i, room) in self.data.rooms.iter_mut().enumerate() {
+                    let mut room = room.lock().unwrap();
                     let idx = i as f32;
                     let rect = egui::Rect::from_min_size(
                                                 // (room_width + padding * 2.0) * (i as f32) + time_width + padding * 2.0,
@@ -354,7 +434,11 @@ impl PlanerApp {
                                 });
                             });
 
-                            for (i, room) in self.data.rooms.iter_mut().enumerate() {
+                            let mut needs_recompute = false;
+                            for (i, room) in self.data.rooms.iter().enumerate() {
+                                let room_ref = room.clone();
+                                let mut room = room.lock().unwrap();
+
                                 let lesson_start = current_day.and_time(lesson.start).unwrap();
                                 let bookings = room.calendar.get_events_at(&lesson_start);
                                 let mut should_unbook = false;
@@ -399,7 +483,10 @@ impl PlanerApp {
 
                                     }
 
-                                    if should_unbook || should_unbook_2 { PlanerData::unbook_exam(exam, room, lesson_start) }
+                                    if should_unbook || should_unbook_2 {
+                                        needs_recompute = true;
+                                        PlanerData::unbook_exam(exam, &mut *room, lesson_start);
+                                    }
                                 } else {
                                     let rect = egui::Rect::from_min_size(
                                         top_left + vec2(
@@ -410,17 +497,21 @@ impl PlanerApp {
 
                                     let mut ui = ui.child_ui(rect, egui::Layout::top_down(egui::Align::TOP));
 
+                                    drop(room);
+
                                     egui::Frame::none().inner_margin(2.0).show(&mut ui, |ui| {
                                         drop_target(ui, |ui| {
                                             ui.allocate_space(ui.available_size());
                                         }, |v: DraggingExam| {
-                                            PlanerData::book_exam(v.0, room, lesson_start);
+                                            PlanerData::book_exam(v.0, &room_ref, lesson_start);
+                                            needs_recompute = true;
                                         });
                                     });
                                 }
                                 ui.allocate_space(ui.available_size());
 
                             }
+                            self.data.schedule_recompute();
                         }
                         remove_exam.map(|v| self.data.unfinish_exam(v));
                     }
@@ -439,6 +530,7 @@ impl PlanerApp {
         egui::SidePanel::right("participant_select_panel")
             .resizable(true)
             .max_width(ctx.available_rect().width() - (min_width + 20.0))
+            .min_width(300.0)
         .show(ctx, |ui| {
             ui.add_space(2.0);
             ui.columns(2, |col| {
@@ -831,7 +923,13 @@ impl PlanerApp {
     }
 
     fn show_exam(ui: &mut egui::Ui, exam: &mut Exam, view: ExamView, on_remove: impl FnOnce()) -> Option<egui::Response> {
-        let res = egui::Frame::group(ui.style()).fill(ui.style().noninteractive().bg_fill).show(ui, |ui| {
+        let frame_color = if matches!(view, ExamView::InRoom) && exam.error.is_some() { egui::Stroke::new(2.0, egui::Color32::DARK_RED) }
+                          else { ui.style().noninteractive().bg_stroke };
+
+        let res = egui::Frame::group(ui.style())
+            .fill(ui.style().noninteractive().bg_fill)
+            .stroke(frame_color)
+        .show(ui, |ui| {
             match view {
                 ExamView::Edit => {
                     egui::TextEdit::singleline(&mut exam.id)
@@ -1017,6 +1115,7 @@ impl PlanerApp {
                         });
                         if view.shows_remove() {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+
                                 ui.add_enabled_ui(!exam.pinned, |ui| {
                                     if ui.button(CLOSE_WINDOW_ICON).on_hover_text_at_pointer("remove item from the room").clicked() { on_remove() }
                                 });
@@ -1024,6 +1123,11 @@ impl PlanerApp {
                                     .on_hover_text_at_pointer("pin item")
                                 .clicked() {
                                     exam.pinned = !exam.pinned;
+                                }
+
+                                if let Some(err) = &exam.error {
+                                    ui.button(egui::RichText::new(WARNING_ICON).color(egui::Color32::YELLOW))
+                                        .on_hover_text_at_pointer(err);
                                 }
                             });
                         }

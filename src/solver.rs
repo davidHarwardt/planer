@@ -6,11 +6,11 @@ use crate::planer::{Exam, Room, Timetable, TimetableLesson};
 
 
 pub struct HardConstraint {
-    pub func: Box<dyn Fn(&Exam, &(&Room, &TimetableLesson, &Date<Utc>)) -> Result<(), String>>,
+    pub func: Box<dyn Fn(&Exam, &(&Room, &DateTime<Utc>), bool) -> Result<(), String>>,
 }
 
 pub struct SoftConstraint {
-    pub func: Box<dyn Fn(&Exam, &(&Room, &TimetableLesson, &Date<Utc>)) -> i32>,
+    pub func: Box<dyn Fn(&Exam, &(&Room, &DateTime<Utc>)) -> i32>,
 }
 
 pub struct Constraints {
@@ -34,28 +34,69 @@ impl Default for Constraints {
         Constraints {
             hard: vec![
                 // check if the room is already booked
-                constraint!(hard: (|_exam, (room, lesson, day)| {
-                    let time = day.and_time(lesson.start).unwrap();
+                constraint!(hard: (|exam, (room, start), is_check| {
                     // check in participants calendars
-                    if room.calendar.is_booked_from_to(&time, lesson.duration) {
-                        Err(format!("the room {} is already booked at {}", room.number, time))
+                    if is_check { return Ok(()) }
+                    if room.calendar.is_booked_from_to(&start, exam.duration) {
+                        Err(format!("the room {} is already booked at {}", room.number, start))
                     } else { Ok(()) }
                 })),
 
-                constraint!(hard: (|exam, (room, _lesson, _day)| {
-                    if exam.tags.iter()
-                        .filter(|tag| tag.required)
-                    .all(|tag| room.tags.contains(&tag.name)) {
+                constraint!(hard: (|exam, (room, _start), _is_check| {
+                    let missing: Vec<_> = exam.tags.iter()
+                        .filter_map(|tag| if tag.required && !room.tags.contains(&tag.name) {
+                            Some(format!("\n - {}", tag.name.clone()))
+                        } else { None })
+                    .collect();
+
+                    if missing.len() == 0 {
                         Ok(())
                     } else {
-                        Err(format!("some required tags are missing from the room"))
+                        let missing = missing.join("");
+                        Err(format!("the following required tags are missing from the room:{missing}"))
                     }
+                })),
+
+                constraint!(hard: (|exam, (_room, start), _is_check| {
+                    let duration = exam.duration;
+                    let booked: Vec<_> = exam.examiners.iter()
+                        .filter_map(|examiner| {
+                            if let Some(examiner) = examiner {
+                                if let Some(examiner) = examiner.get() {
+                                    let examinerp = examiner.lock().unwrap();
+                                    let bookings = examinerp.calendar.get_booked_from_to(start, duration);
+                                    // if bookings.len() == 0 { return None }
+                                    // if bookings.len() == 1 && bookings[0].data.uuid() == exam.uuid { return None }
+
+                                    let bookings_string = bookings.iter()
+                                        .filter_map(|b| {
+                                            if b.data.uuid() == exam.uuid { None }
+                                            else { Some(b.data.get().map(|v| {
+                                                let v = v.lock().unwrap();
+                                                format!("{}", v.id)
+                                            })) }
+                                        })
+                                        .filter_map(|v| v)
+                                    .collect::<Vec<_>>();
+
+                                    drop(examinerp);
+                                    if bookings_string.len() != 0 {
+                                        Some(format!("\n{}: {}", examiner.lock().unwrap().name, bookings_string.join(", ")))
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        })
+                    .collect();
+
+                    if booked.len() != 0 {
+                        Err(format!("the following people are already booked:{}", booked.join("")))
+                    } else { Ok(()) }
                 })),
             ],
 
             soft: vec![
                 // rank rooms with matching tags heigher
-                constraint!(soft: (|exam, (room, _lesson, _day)| {
+                constraint!(soft: (|exam, (room, _start)| {
                     exam.tags.iter()
                         .filter_map(|tag| {
                             if room.tags.contains(&tag.name) {
@@ -70,14 +111,14 @@ impl Default for Constraints {
 }
 
 impl Constraints {
-    fn apply_hard(&self, value: &Exam, candidate: &(&Room, &TimetableLesson, &Date<Utc>)) -> Result<(), String> {
-        match self.hard.iter().find_map(|v| (v.func)(value, candidate).err()) {
+    pub fn apply_hard(&self, value: &Exam, candidate: &(&Room, &DateTime<Utc>), is_check: bool) -> Result<(), String> {
+        match self.hard.iter().find_map(|v| (v.func)(value, candidate, is_check).err()) {
             Some(err) => Err(err),
             None => Ok(()),
         }
     }
 
-    fn apply_soft(&self, value: &Exam, candidate: &(&Room, &TimetableLesson, &Date<Utc>)) -> i32 {
+    pub fn apply_soft(&self, value: &Exam, candidate: &(&Room, &DateTime<Utc>)) -> i32 {
         self.soft.iter().fold(0, |acc, v| { acc + (v.func)(value, candidate) })
     }
 }
@@ -91,10 +132,10 @@ pub struct SolveResult {
 
 pub fn solve(
     values: &mut Vec<Arc<Mutex<Exam>>>,
-    rooms: &mut [Room],
+    rooms: &mut [Arc<Mutex<Room>>],
     timetable: &Timetable,
     day: Date<Utc>,
-    mut mutator: impl FnMut(&Arc<Mutex<Exam>>, (&mut Room, &TimetableLesson, &Date<Utc>)),
+    mut mutator: impl FnMut(&Arc<Mutex<Exam>>, (&Arc<Mutex<Room>>, &TimetableLesson, &Date<Utc>)),
 
     constraints: &Constraints,
 ) -> Result<SolveResult, SolveResult> {
@@ -108,13 +149,14 @@ pub fn solve(
                 })
             })
             .filter(|Indexed(_, (exam, (Indexed(_, room), t)))| {
-                constraints.apply_hard(&exam.lock().unwrap(), &(room, t, &day))
+                let room = room.lock().unwrap();
+                constraints.apply_hard(&exam.lock().unwrap(), &(&*room, &day.and_time(t.start).unwrap()), false)
                     // .map_err(|err| println!("err: {err}"))
                     // .map(|_| println!("ok"))
                 .is_ok()
             })
         .fold(Ranked(i32::MIN, Indexed(0, None)), |Ranked(acc_score, Indexed(i, item)), Indexed(j, (exam, (Indexed(k, room), t)))| {
-            let combination = &(room, t, &day);
+            let combination = &(&*room.lock().unwrap(), &day.and_time(t.start).unwrap());
             let score = constraints.apply_soft(&exam.lock().unwrap(), combination);
 
             // println!("score: {score}, acc_score: {acc_score}");

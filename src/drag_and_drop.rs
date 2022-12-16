@@ -165,8 +165,9 @@ where
     let mut stroke = style.bg_stroke;
     if is_being_dragged && !can_accept_drag {
         let window_fill = ui.visuals().window_fill();
-        fill = epaint::color::tint_color_towards(fill, window_fill);
-        stroke.color = epaint::color::tint_color_towards(stroke.color, window_fill);
+        fill = egui::ecolor::tint_color_towards(fill, window_fill);
+
+        stroke.color = egui::ecolor::tint_color_towards(stroke.color, window_fill);
     }
 
     ui.painter().set(bg_target, epaint::RectShape {

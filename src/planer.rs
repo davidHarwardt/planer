@@ -1,7 +1,7 @@
 pub mod calendar;
 pub mod uuid_ref;
 
-use std::{sync::{Mutex, Arc}, path::Path};
+use std::{sync::{Mutex, Arc}, path::Path, cell::RefCell};
 
 use chrono::{prelude::*, Duration};
 use serde_with::{serde_as, DurationSeconds};
@@ -20,23 +20,54 @@ pub struct PlanerData {
     pub unfinished_exams: Vec<Arc<Mutex<Exam>>>,
     pub finished_exams: Vec<Arc<Mutex<Exam>>>,
 
-    pub rooms: Vec<Room>,
+    pub rooms: Vec<Arc<Mutex<Room>>>,
     pub timetable: Timetable,
 
     #[serde(skip)]
     pub constraints: Constraints,
+
+    #[serde(skip)]
+    pub current_file_name: Option<String>,
+
+    #[serde(skip)]
+    needs_recompute: RefCell<bool>,
 }
 
 impl PlanerData {
-    pub fn save(&self, path: impl AsRef<Path>) {
-        let data = serde_json::to_string(self).expect("could not serialize data");
-        std::fs::write(path, data).expect("could not write file");
+    pub fn save(&mut self) {
+        if let Some(file) = &self.current_file_name {
+            let data = serde_json::to_string(self).expect("could not serialize data");
+            std::fs::write(file, data).expect("could not write file");
+        } else {
+            self.save_as();
+        }
+    }
+
+    pub fn save_as(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("plans", &["plan"])
+            .add_filter("planer templates", &["ptemplate"])
+            .save_file();
+        if let Some(path) = file {
+            self.current_file_name = Some(path.to_str().unwrap().to_owned());
+            self.save();
+        }
     }
 
     pub fn load(path: impl AsRef<Path>) -> Self {
+        let file_name = path.as_ref().to_str().unwrap().to_owned();
+        let mut data = Self::load_template(path);
+        data.current_file_name = Some(file_name);
+
+        data
+    }
+
+    pub fn load_template(path: impl AsRef<Path>) -> Self {
         let file = std::fs::read_to_string(path).expect("could not open file");
         let mut data: PlanerData = serde_json::from_str(&file[..]).expect("could not deserialize data");
         data.revalidate();
+        data.compute_conflicts();
+
         data
     }
 
@@ -58,7 +89,7 @@ impl PlanerData {
         }
 
         for room in &mut self.rooms {
-            room.revalidate(&self.finished_exams);
+            room.lock().unwrap().revalidate(&self.finished_exams);
         }
     }
 
@@ -76,7 +107,8 @@ impl PlanerData {
             &self.timetable,
             Utc::today(),
             |exam, (room, lesson, day)| {
-                Self::book_exam(UuidRef::new(exam), room, day.and_time(lesson.start).unwrap());
+                let room_ref = Arc::clone(room);
+                Self::book_exam(UuidRef::new(exam), &room_ref, day.and_time(lesson.start).unwrap());
             },
             &self.constraints,
         );
@@ -90,6 +122,35 @@ impl PlanerData {
                 println!("could not match all exams");
             },
         }
+
+        self.compute_conflicts();
+    }
+
+    pub fn compute_conflicts(&mut self) {
+        for exam in &self.finished_exams {
+            let mut exam = exam.lock().unwrap();
+
+            if let Some((room_ref, time)) = exam.pairing.as_ref() {
+                let room_res = room_ref.get().unwrap();
+                let room = room_res.lock().unwrap();
+                let combination = (&*room, time);
+
+                exam.error = self.constraints.apply_hard(&exam, &combination, true).err();
+            } else {
+                println!("no pairing: {exam:?}");
+            }
+        }
+    }
+
+    pub fn schedule_recompute(&self) {
+        *self.needs_recompute.borrow_mut() = true;
+    }
+
+    pub fn recompute_if_scheduled(&mut self) {
+        if *self.needs_recompute.borrow() {
+            self.compute_conflicts();
+            *self.needs_recompute.borrow_mut() = false;
+        }
     }
 
     pub fn add_teacher(&mut self, first: String, last: String, title: Option<String>, shorthand: Option<String>, subjects: &[String]) {
@@ -102,9 +163,11 @@ impl PlanerData {
         })));
     }
 
-    pub fn book_exam(exam_ref: UuidRef<Mutex<Exam>>, room: &mut Room, start_time: DateTime<Utc>) {
+    pub fn book_exam(exam_ref: UuidRef<Mutex<Exam>>, room: &Arc<Mutex<Room>>, start_time: DateTime<Utc>) {
+        let room_ref = UuidRef::new(room);
         if let Some(exam) = exam_ref.get() {
             let mut exam = exam.lock().unwrap();
+            let mut room = room.lock().unwrap();
 
             let ev = Event::new(start_time, exam.duration, exam_ref.clone());
 
@@ -121,6 +184,8 @@ impl PlanerData {
             }
 
             room.calendar.add_event(ev);
+
+            exam.pairing = Some((room_ref, start_time));
         }
     }
 
@@ -169,16 +234,17 @@ impl PlanerData {
             examinees: Vec::new(),
             pinned: false,
             examiners: [None, None, None],
+            pairing: None,
             error: None,
         })));
     }
 
     pub fn add_room(&mut self, number: String, tags: Vec<String>) {
-        self.rooms.push(Room {
+        self.rooms.push(Arc::new(Mutex::new(Room {
             number, tags,
             calendar: Calendar::new(),
             uuid: Uuid::new_v4(),
-        });
+        })));
     }
 }
 
@@ -195,6 +261,8 @@ impl Default for PlanerData {
             timetable: Timetable::default(),
 
             constraints: Constraints::default(),
+            current_file_name: None,
+            needs_recompute: RefCell::new(false),
         };
         
         v
@@ -296,6 +364,9 @@ pub struct Exam {
 
     pub subjects: Vec<String>,
     pub tags: Vec<Tag>,
+
+    pub pairing: Option<(UuidRef<Mutex<Room>>, DateTime<Utc>)>,
+
     #[serde(skip)]
     pub error: Option<String>,
 }
